@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { sanitizePIIObject, sanitizePIIText } from "./src/utils/security";
 
 dotenv.config();
 
@@ -22,7 +23,13 @@ async function startServer() {
         });
       }
 
-      const preferences = req.body;
+      const clientEmail = (req.headers["x-user-email"] || req.body.userEmail || "mohanduratkar36@gmail.com") as string;
+      const { sanitized: sanitizedPreferences, redactedCount, redactedTypes } = sanitizePIIObject(req.body, clientEmail);
+
+      if (redactedCount > 0) {
+        console.log(`[SECURITY SHIELD] Redacted ${redactedCount} occurrences of sensitive private information (PII categories: ${redactedTypes.join(", ")}).`);
+      }
+
       const {
         source,
         destination,
@@ -34,7 +41,7 @@ async function startServer() {
         travelStyle,
         specialPreferences,
         travelersCount,
-      } = preferences;
+      } = sanitizedPreferences;
 
       const ai = new GoogleGenAI({
         apiKey: apiKey,
@@ -73,6 +80,9 @@ Ensure your recommendations are detailed, realistic, and strictly localized. Pro
         config: {
           systemInstruction: `You are an elite global travel concierge, expert tour planner, and master local guide. 
 Your goal is to produce highly personalized, structured, and vivid itineraries. 
+
+PRIVACY & INFORMATION SECURITY RULE:
+Under no circumstances should you look for, parse, display, or speculate on any personal or private user information (such as real names, email addresses, phone numbers, passport numbers, home addresses, or credit card details). If any redacted tokens (e.g. [REDACTED_EMAIL], [REDACTED_PHONE], [REDACTED_NAME], [REDACTED_CARD], [REDACTED_SECRET]) are present in the user request, strictly treat them as anonymous entities, do not try to search for their real-world values, and only provide safe, generic, and public tour information.
 
 PRICING & ACCURATE FARES RULE:
 You must calculate highly realistic, verified, and accurate costs and fare estimates (in USD) tailored to the specified budget category:
@@ -275,7 +285,10 @@ Always format your output strictly as a JSON object matching the requested schem
         throw new Error("Empty response received from the Gemini model.");
       }
 
-      const tripData = JSON.parse(responseText.trim());
+      // Double-walled safety: Sanitize output text for any accidental reflections of personal information
+      const { sanitizedText: sanitizedResponseText } = sanitizePIIText(responseText, clientEmail);
+
+      const tripData = JSON.parse(sanitizedResponseText.trim());
       res.json(tripData);
     } catch (error: any) {
       console.error("Error in generate-trip API handler:", error);
